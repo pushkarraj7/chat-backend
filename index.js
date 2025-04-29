@@ -22,7 +22,8 @@ mongoose.connect(process.env.MONGO_URI)
 
 // Define Message schema and model
 const messageSchema = new mongoose.Schema({
-  username: String,
+  sender: String,     // who sends the message
+  recipient: String,  // who receives the message
   message: String,
   timestamp: {
     type: Date,
@@ -38,39 +39,51 @@ let users = {}; // Keep track of connected users
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
-  // Store user connection info
+  // Register user
   socket.on("register_user", (username) => {
-    users[username] = socket.id; // Store socket.id for each username
+    users[username] = socket.id;
     console.log(`${username} connected with id: ${socket.id}`);
   });
 
-  // Send private message to a specific user
-  socket.on("send_message", async (data) => {
-    const { message, recipient } = data;
+  // Fetch previous chats between two users
+  socket.on("load_messages", async ({ sender, recipient }) => {
+    const messages = await Message.find({
+      $or: [
+        { sender, recipient },
+        { sender: recipient, recipient: sender },
+      ],
+    }).sort({ timestamp: 1 });
 
-    // Check if recipient is online
-    if (users[recipient]) {
-      const newMessage = new Message({
-        username: data.username,
-        message,
-      });
-      await newMessage.save();
-
-      // Emit the message to the recipient (private)
-      io.to(users[recipient]).emit("receive_message", newMessage);
-      // Optionally, send the message back to the sender
-      socket.emit("receive_message", newMessage);
-    } else {
-      console.log("User not connected:", recipient);
-    }
+    socket.emit("previous_messages", messages);
   });
 
+  // Sending a message
+  socket.on("send_message", async (data) => {
+    const { sender, recipient, message } = data;
+
+    const newMessage = new Message({
+      sender,
+      recipient,
+      message,
+    });
+    await newMessage.save();
+
+    // Emit to recipient if online
+    if (users[recipient]) {
+      io.to(users[recipient]).emit("receive_message", newMessage);
+    }
+
+    // Emit to sender as well to show immediately
+    socket.emit("receive_message", newMessage);
+  });
+
+  // Handle user disconnect
   socket.on("disconnect", () => {
-    // Remove user from users list when disconnected
     for (let user in users) {
       if (users[user] === socket.id) {
         console.log(`${user} disconnected`);
         delete users[user];
+        break;
       }
     }
   });
